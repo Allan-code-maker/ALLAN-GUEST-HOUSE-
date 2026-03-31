@@ -1,141 +1,214 @@
+<?php
+require_once __DIR__ . '/config.php';
+require_once __DIR__ . '/db.php';
+require_once __DIR__ . '/auth.php';
+require_login(); // Any logged-in user can view; admin-only sections are gated below
+
+$conn = get_db();
+$is_admin = (current_role() === 'admin');
+
+// Handle booking status update (admin only)
+if ($is_admin && $_SERVER['REQUEST_METHOD'] === 'POST' && isset($_POST['booking_id'], $_POST['status'])) {
+    $bid    = intval($_POST['booking_id']);
+    $bstat  = in_array($_POST['status'], ['pending','confirmed','cancelled']) ? $_POST['status'] : 'pending';
+    $stmt   = $conn->prepare('UPDATE bookings SET status = ? WHERE id = ?');
+    $stmt->bind_param('si', $bstat, $bid);
+    $stmt->execute();
+    $stmt->close();
+    header('Location: dashboard.php');
+    exit;
+}
+
+// Handle room update (admin only)
+if ($is_admin && $_SERVER['REQUEST_METHOD'] === 'POST' && isset($_POST['room_id'])) {
+    $rid   = intval($_POST['room_id']);
+    $rtype = trim($_POST['room_type'] ?? '');
+    $rprice= floatval($_POST['room_price'] ?? 0);
+    $rdesc = trim($_POST['room_desc'] ?? '');
+    $ravail= isset($_POST['room_available']) ? 1 : 0;
+    if ($rtype && $rprice > 0) {
+        $stmt = $conn->prepare('UPDATE rooms SET type=?, price=?, description=?, available=? WHERE id=?');
+        $stmt->bind_param('sdsii', $rtype, $rprice, $rdesc, $ravail, $rid);
+        $stmt->execute();
+        $stmt->close();
+    }
+    header('Location: dashboard.php');
+    exit;
+}
+
+// Fetch stats
+$total_bookings  = $conn->query("SELECT COUNT(*) AS c FROM bookings")->fetch_assoc()['c'];
+$pending_bookings= $conn->query("SELECT COUNT(*) AS c FROM bookings WHERE status='pending'")->fetch_assoc()['c'];
+$total_users     = $conn->query("SELECT COUNT(*) AS c FROM users")->fetch_assoc()['c'];
+$total_orders    = $conn->query("SELECT COUNT(*) AS c FROM orders")->fetch_assoc()['c'];
+
+// Fetch bookings
+$bookings = $conn->query(
+    "SELECT id, name, email, phone, room, checkin, checkout, status, created_at
+     FROM bookings ORDER BY created_at DESC LIMIT 50"
+);
+
+// Fetch rooms (admin)
+$rooms = $is_admin ? $conn->query("SELECT id, number, type, price, description, available FROM rooms ORDER BY price ASC") : null;
+
+// Fetch users (admin)
+$users = $is_admin ? $conn->query("SELECT id, username, email, created_at FROM users ORDER BY created_at DESC") : null;
+?>
 <!DOCTYPE html>
 <html lang="en">
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>Admin Dashboard</title>
-    <style>
-        body {
-            font-family: "Poppins", sans-serif;
-            background: #f5f5f5;
-            margin: 0;
-            padding: 0;
-        }
-        .dashboard-container {
-            max-width: 900px;
-            margin: 40px auto;
-            background: #fff;
-            border-radius: 12px;
-            box-shadow: 0 2px 12px rgba(0,0,0,0.08);
-            padding: 32px 28px;
-        }
-        h1 {
-            color: #32CDD5;
-            margin-bottom: 24px;
-            text-align: center;
-        }
-        .section {
-            margin-bottom: 32px;
-        }
-        .section h2 {
-            color: #222;
-            margin-bottom: 12px;
-            font-size: 1.2rem;
-        }
-        table {
-            width: 100%;
-            border-collapse: collapse;
-            margin-bottom: 12px;
-        }
-        th, td {
-            border: 1px solid #e0e0e0;
-            padding: 8px 10px;
-            text-align: left;
-        }
-        th {
-            background: #32CDD5;
-            color: #fff;
-        }
-        .btn {
-            background: #32CDD5;
-            color: #fff;
-            border: none;
-            border-radius: 6px;
-            padding: 6px 12px;
-            cursor: pointer;
-            font-size: 0.95rem;
-        }
-        .btn-danger {
-            background: #d32f2f;
-        }
-        .message {
-            background: #e0f7fa;
-            padding: 8px;
-            border-radius: 6px;
-            margin-bottom: 8px;
-        }
-    </style>
+    <title>Dashboard — <?= htmlspecialchars(APP_NAME) ?></title>
+    <link rel="stylesheet" href="style.css">
 </head>
 <body>
-<div class="dashboard-container">
-    <h1>Admin Dashboard</h1>
-    <div class="section">
-        <h2>Room Bookings</h2>
-        <?php
-        $conn = new mysqli("localhost", "root", "", "guesthouse");
-        if ($conn->connect_error) {
-            echo '<div class="message">Database connection failed.</div>';
-        } else {
-            $result = $conn->query("SELECT name, email, phone, room, checkin, checkout, created_at FROM bookings ORDER BY created_at DESC");
-            if ($result && $result->num_rows > 0) {
-                echo '<table><tr><th>Name</th><th>Email</th><th>Phone</th><th>Room</th><th>Check-in</th><th>Check-out</th><th>Booked At</th></tr>';
-                while ($row = $result->fetch_assoc()) {
-                    echo '<tr>';
-                    echo '<td>' . htmlspecialchars($row['name']) . '</td>';
-                    echo '<td>' . htmlspecialchars($row['email']) . '</td>';
-                    echo '<td>' . htmlspecialchars($row['phone']) . '</td>';
-                    echo '<td>' . htmlspecialchars($row['room']) . '</td>';
-                    echo '<td>' . htmlspecialchars($row['checkin']) . '</td>';
-                    echo '<td>' . htmlspecialchars($row['checkout']) . '</td>';
-                    echo '<td>' . htmlspecialchars($row['created_at']) . '</td>';
-                    echo '</tr>';
-                }
-                echo '</table>';
-            } else {
-                echo '<div class="message">No bookings found.</div>';
-            }
-            $conn->close();
-        }
-        ?>
+<?php include __DIR__ . '/navbar.php'; ?>
+
+<main class="page-main">
+    <div class="dashboard-header">
+        <h1>Welcome, <?= htmlspecialchars(current_username()) ?> <span class="role-badge"><?= ucfirst(current_role()) ?></span></h1>
     </div>
-    <div class="section">
-        <h2>Registered Users</h2>
-        <?php
-        if (file_exists("users.txt")) {
-            $users = file("users.txt");
-            if (count($users) > 0) {
-                echo '<table><tr><th>Username</th><th>Email</th></tr>';
-                foreach ($users as $user) {
-                    $fields = explode(",", trim($user));
-                    echo '<tr><td>' . htmlspecialchars($fields[0]) . '</td><td>' . htmlspecialchars($fields[1]) . '</td></tr>';
-                }
-                echo '</table>';
-            } else {
-                echo '<div class="message">No users found.</div>';
-            }
-        } else {
-            echo '<div class="message">No users found.</div>';
-        }
-        ?>
+
+    <!-- Stats Cards -->
+    <div class="stats-grid">
+        <div class="stat-card">
+            <div class="stat-number"><?= $total_bookings ?></div>
+            <div class="stat-label">Total Bookings</div>
+        </div>
+        <div class="stat-card">
+            <div class="stat-number"><?= $pending_bookings ?></div>
+            <div class="stat-label">Pending Bookings</div>
+        </div>
+        <div class="stat-card">
+            <div class="stat-number"><?= $total_users ?></div>
+            <div class="stat-label">Registered Users</div>
+        </div>
+        <div class="stat-card">
+            <div class="stat-number"><?= $total_orders ?></div>
+            <div class="stat-label">Restaurant Orders</div>
+        </div>
     </div>
-    <div class="section">
-        <h2>Update Room Details</h2>
-        <form method="post" action="">
-            <input type="text" name="room_name" placeholder="Room Name" required style="margin-bottom:8px; width:200px;">
-            <input type="number" name="room_price" placeholder="Price" required style="margin-bottom:8px; width:120px;">
-            <button class="btn" type="submit">Update</button>
-        </form>
-        <!-- For demo, not saving room details. Implement DB or file save as needed. -->
+
+    <!-- Bookings Table -->
+    <div class="card section">
+        <h2 class="section-title">Room Bookings</h2>
+        <?php if ($bookings && $bookings->num_rows > 0): ?>
+            <div class="table-responsive">
+                <table class="data-table">
+                    <thead>
+                        <tr>
+                            <th>#</th><th>Name</th><th>Email</th><th>Phone</th>
+                            <th>Room</th><th>Check-in</th><th>Check-out</th>
+                            <th>Status</th>
+                            <?php if ($is_admin): ?><th>Action</th><?php endif; ?>
+                        </tr>
+                    </thead>
+                    <tbody>
+                        <?php while ($b = $bookings->fetch_assoc()): ?>
+                            <tr>
+                                <td><?= $b['id'] ?></td>
+                                <td><?= htmlspecialchars($b['name']) ?></td>
+                                <td><?= htmlspecialchars($b['email']) ?></td>
+                                <td><?= htmlspecialchars($b['phone']) ?></td>
+                                <td><?= htmlspecialchars($b['room']) ?></td>
+                                <td><?= htmlspecialchars($b['checkin']) ?></td>
+                                <td><?= htmlspecialchars($b['checkout']) ?></td>
+                                <td><span class="badge badge-<?= $b['status'] ?>"><?= ucfirst($b['status']) ?></span></td>
+                                <?php if ($is_admin): ?>
+                                <td>
+                                    <form method="post" style="display:inline;">
+                                        <input type="hidden" name="booking_id" value="<?= $b['id'] ?>">
+                                        <select name="status" class="form-control" style="width:auto;display:inline;">
+                                            <option value="pending"   <?= $b['status']==='pending'   ?'selected':'' ?>>Pending</option>
+                                            <option value="confirmed" <?= $b['status']==='confirmed' ?'selected':'' ?>>Confirmed</option>
+                                            <option value="cancelled" <?= $b['status']==='cancelled' ?'selected':'' ?>>Cancelled</option>
+                                        </select>
+                                        <button type="submit" class="btn btn-sm btn-primary">Update</button>
+                                    </form>
+                                </td>
+                                <?php endif; ?>
+                            </tr>
+                        <?php endwhile; ?>
+                    </tbody>
+                </table>
+            </div>
+        <?php else: ?>
+            <div class="alert alert-info">No bookings yet.</div>
+        <?php endif; ?>
     </div>
-    <div class="section">
-        <h2>Customer Requests / Messages</h2>
-        <div class="message">No new messages.</div>
-        <!-- Implement message display from a file or DB as needed. -->
+
+    <?php if ($is_admin): ?>
+    <!-- Manage Rooms -->
+    <div class="card section">
+        <h2 class="section-title">Manage Rooms</h2>
+        <?php if ($rooms && $rooms->num_rows > 0): ?>
+            <div class="table-responsive">
+                <table class="data-table">
+                    <thead>
+                        <tr><th>#</th><th>Room No.</th><th>Type</th><th>Price (Ksh)</th><th>Description</th><th>Available</th><th>Save</th></tr>
+                    </thead>
+                    <tbody>
+                        <?php while ($r = $rooms->fetch_assoc()): ?>
+                            <tr>
+                                <form method="post">
+                                    <input type="hidden" name="room_id" value="<?= $r['id'] ?>">
+                                    <td><?= $r['id'] ?></td>
+                                    <td><?= htmlspecialchars($r['number']) ?></td>
+                                    <td><input type="text" name="room_type" value="<?= htmlspecialchars($r['type']) ?>" class="form-control" style="width:100px;"></td>
+                                    <td><input type="number" name="room_price" value="<?= $r['price'] ?>" class="form-control" style="width:100px;" step="0.01" min="0"></td>
+                                    <td><input type="text" name="room_desc" value="<?= htmlspecialchars($r['description']) ?>" class="form-control"></td>
+                                    <td style="text-align:center;"><input type="checkbox" name="room_available" <?= $r['available'] ? 'checked' : '' ?>></td>
+                                    <td><button type="submit" class="btn btn-sm btn-primary">Save</button></td>
+                                </form>
+                            </tr>
+                        <?php endwhile; ?>
+                    </tbody>
+                </table>
+            </div>
+        <?php else: ?>
+            <div class="alert alert-info">No rooms found.</div>
+        <?php endif; ?>
     </div>
-    <div class="section">
-        <h2>Manage Site Content</h2>
-        <div class="message">Content management coming soon.</div>
+
+    <!-- Registered Users -->
+    <div class="card section">
+        <h2 class="section-title">Registered Users</h2>
+        <?php if ($users && $users->num_rows > 0): ?>
+            <div class="table-responsive">
+                <table class="data-table">
+                    <thead>
+                        <tr><th>#</th><th>Username</th><th>Email</th><th>Registered At</th></tr>
+                    </thead>
+                    <tbody>
+                        <?php while ($u = $users->fetch_assoc()): ?>
+                            <tr>
+                                <td><?= $u['id'] ?></td>
+                                <td><?= htmlspecialchars($u['username']) ?></td>
+                                <td><?= htmlspecialchars($u['email']) ?></td>
+                                <td><?= htmlspecialchars($u['created_at']) ?></td>
+                            </tr>
+                        <?php endwhile; ?>
+                    </tbody>
+                </table>
+            </div>
+        <?php else: ?>
+            <div class="alert alert-info">No users registered yet.</div>
+        <?php endif; ?>
     </div>
-</div>
+
+    <!-- Quick Links -->
+    <div class="card section">
+        <h2 class="section-title">Quick Actions</h2>
+        <div style="display:flex; gap:12px; flex-wrap:wrap;">
+            <a href="order.php" class="btn btn-primary">View Restaurant Orders</a>
+            <a href="rooms.php" class="btn btn-secondary">View Rooms Page</a>
+            <a href="hotel.php" class="btn btn-secondary">View Menu Page</a>
+        </div>
+    </div>
+    <?php endif; ?>
+</main>
+
+<?php include __DIR__ . '/footer.php'; ?>
 </body>
 </html>
